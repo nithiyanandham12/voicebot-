@@ -584,14 +584,56 @@ Summary:"""
     except Exception as e:
         return f"Error generating summary: {str(e)}"
 
+def send_to_slack(summary, webhook_url):
+    """Send conversation summary to Slack channel"""
+    try:
+        # Format the message for Slack
+        message = {
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "🎙️ Voice Bot Conversation Summary",
+                        "emoji": True
+                    }
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*Summary:*\n{summary}"
+                    }
+                },
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                        }
+                    ]
+                }
+            ]
+        }
+        
+        # Send to Slack
+        response = requests.post(webhook_url, json=message)
+        response.raise_for_status()
+        return True
+    except Exception as e:
+        st.error(f"Error sending to Slack: {str(e)}")
+        return False
+
 def send_summary_email(summary, recipient_email):
-    """Send conversation summary via email"""
+    """Send conversation summary via email and Slack"""
     try:
         # Get email configuration from environment variables
         sender_email = os.getenv("EMAIL_SENDER")
         email_password = os.getenv("EMAIL_PASSWORD")
         smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
         smtp_port = int(os.getenv("SMTP_PORT", "587"))
+        slack_webhook_url = os.getenv("SLACK_WEBHOOK_URL")
 
         if not all([sender_email, email_password]):
             return "Email configuration missing. Please set EMAIL_SENDER and EMAIL_PASSWORD in .env file."
@@ -623,9 +665,17 @@ def send_summary_email(summary, recipient_email):
             server.login(sender_email, email_password)
             server.send_message(msg)
 
-        return "Summary sent successfully!"
+        # Send to Slack if webhook URL is configured
+        if slack_webhook_url:
+            slack_success = send_to_slack(summary, slack_webhook_url)
+            if slack_success:
+                return "Summary sent successfully to email and Slack!"
+            else:
+                return "Summary sent to email but failed to send to Slack."
+        
+        return "Summary sent successfully to email!"
     except Exception as e:
-        return f"Error sending email: {str(e)}"
+        return f"Error sending summary: {str(e)}"
 
 # Main UI
 st.title("🎙️ Multilingual Voice Bot with Watsonx LLM")
