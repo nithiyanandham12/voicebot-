@@ -26,8 +26,13 @@ from gtts import gTTS
 import pygame
 import base64
 
-# Initialize pygame mixer
-pygame.mixer.init()
+# Initialize pygame mixer with error handling
+try:
+    pygame.mixer.init()
+    PYGAME_AVAILABLE = True
+except Exception as e:
+    PYGAME_AVAILABLE = False
+    print("Warning: pygame audio not available. Using alternative audio playback.")
 
 # Load environment variables
 load_dotenv()
@@ -434,14 +439,20 @@ def speak_text_multilingual(text, language='en'):
         tts = gTTS(text=text, lang=tts_lang, slow=False)
         tts.save(temp_filename)
         
-        # Play the audio using pygame
-        pygame.mixer.music.load(temp_filename)
-        pygame.mixer.music.play()
-        
-        # Wait for the audio to finish playing
-        while pygame.mixer.music.get_busy():
-            pygame.time.Clock().tick(10)
-        
+        if PYGAME_AVAILABLE:
+            # Play the audio using pygame
+            pygame.mixer.music.load(temp_filename)
+            pygame.mixer.music.play()
+            
+            # Wait for the audio to finish playing
+            while pygame.mixer.music.get_busy():
+                pygame.time.Clock().tick(10)
+        else:
+            # Alternative: Create an audio player using Streamlit's audio component
+            with open(temp_filename, 'rb') as audio_file:
+                audio_bytes = audio_file.read()
+                st.audio(audio_bytes, format='audio/mp3')
+            
         # Clean up the temporary file
         try:
             os.unlink(temp_filename)
