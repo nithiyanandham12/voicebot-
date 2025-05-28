@@ -8,6 +8,10 @@ import threading
 import time
 from io import BytesIO
 import tempfile
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from datetime import datetime
 try:
     from langdetect import detect
     from langdetect.lang_detect_exception import LangDetectError
@@ -84,6 +88,8 @@ if 'detected_language' not in st.session_state:
     st.session_state.detected_language = 'en'
 if 'auto_detect' not in st.session_state:
     st.session_state.auto_detect = True
+if 'continuous_mode' not in st.session_state:
+    st.session_state.continuous_mode = False
 
 # Your existing Watsonx functions
 def get_bearer_token(api_key):
@@ -111,6 +117,7 @@ def clean_ai_response(response_text):
         "<|eot_id|>",
         "<|start_header_id|>",
         "<|end_header_id|>",
+        "**",
         "assistant<|end_header_id|>\n\n",
         "assistant<|end_header_id|>\n",
     ]
@@ -136,9 +143,7 @@ def get_watsonx_response(history, user_input, bearer_token, detected_lang='en'):
     language_context = ""
     if detected_lang != 'en':
         lang_names = {
-            'hi': 'Hindi', 'ta': 'Tamil', 'te': 'Telugu', 'kn': 'Kannada',
-            'ml': 'Malayalam', 'bn': 'Bengali', 'gu': 'Gujarati', 'mr': 'Marathi',
-            'pa': 'Punjabi', 'or': 'Odia', 'as': 'Assamese', 'ur': 'Urdu'
+            'hi': 'Hindi', 'ta': 'Tamil'
         }
         lang_name = lang_names.get(detected_lang, 'regional language')
         language_context = f"The user is speaking in {lang_name}. Please respond appropriately and consider the cultural context. If needed, you can respond in English or the same language as appropriate."
@@ -237,24 +242,21 @@ def advanced_language_detection(text):
     
     # Hindi/Marathi specific patterns
     hindi_patterns = [r'[हैं|है|का|के|की|को|में|से]', r'क्[या|यों|या]', r'[होगा|होगी|होंगे]']
-    marathi_patterns = [r'[आहे|आहेत|चा|चे|ची|ला|मध्ये]', r'[कसे|कुठे|केव्हा]']
+    
     
     # Tamil specific patterns
     tamil_patterns = [r'[ான்|ாள்|ார்|க்கு|வில்|டு]', r'[என்ன|எப்படி|எங்கே]']
     
     # Telugu specific patterns  
-    telugu_patterns = [r'[అని|లేదు|వున్న|చేస్]', r'[ఎలా|ఎక్కడ|ఎప్పుడు]']
+    
     
     for lang in LANGUAGE_PATTERNS.keys():
         pattern_matches = 0
         if lang == 'hi':
             pattern_matches = sum(len(re.findall(pattern, text)) for pattern in hindi_patterns)
-        elif lang == 'mr':
-            pattern_matches = sum(len(re.findall(pattern, text)) for pattern in marathi_patterns)
         elif lang == 'ta':
             pattern_matches = sum(len(re.findall(pattern, text)) for pattern in tamil_patterns)
-        elif lang == 'te':
-            pattern_matches = sum(len(re.findall(pattern, text)) for pattern in telugu_patterns)
+        
         
         pattern_scores[lang] = pattern_matches / max(1, len(words))
     
@@ -307,17 +309,29 @@ def listen_for_speech_multilingual():
     with sr.Microphone() as source:
         st.info("🎤 Listening... Speak in any supported Indian language!")
         try:
-            # Adjust for ambient noise
+            # Adjust for ambient noise with longer duration
             recognizer.adjust_for_ambient_noise(source, duration=1)
-            # Listen for speech with timeout
-            audio = recognizer.listen(source, timeout=15, phrase_time_limit=15)
+            
+            # Configure speech recognition parameters for more patient listening
+            recognizer.dynamic_energy_threshold = True
+            recognizer.energy_threshold = 300  # Keep threshold for noise filtering
+            recognizer.pause_threshold = 1.5   # Increased pause threshold to wait longer between phrases
+            recognizer.phrase_threshold = 0.3  # Keep phrase threshold the same
+            recognizer.non_speaking_duration = 1.0  # Increased non-speaking duration
+            
+            # Listen for speech with longer timeouts
+            audio = recognizer.listen(
+                source,
+                timeout=45,           # Increased timeout to 45 seconds
+                phrase_time_limit=45  # Increased phrase time limit to 45 seconds
+            )
             
             # If auto-detect is enabled, try multiple languages with advanced detection
             if st.session_state.auto_detect:
                 recognition_results = []
                 
                 # Priority order: commonly used languages first
-                priority_languages = ['en', 'hi', 'ta', 'te', 'kn', 'ml', 'bn', 'gu', 'mr']
+                priority_languages = ['en', 'hi', 'ta']
                 other_languages = [lang for lang in SUPPORTED_LANGUAGES.keys() if lang not in priority_languages]
                 languages_to_try = priority_languages + other_languages
                 
@@ -343,7 +357,8 @@ def listen_for_speech_multilingual():
                                 'total_score': total_score
                             })
                             
-                    except (sr.UnknownValueError, sr.RequestError, Exception):
+                    except (sr.UnknownValueError, sr.RequestError, Exception) as e:
+                        st.warning(f"Failed to recognize speech in {lang_code}: {str(e)}")
                         continue
                 
                 # Select the best result based on total score
@@ -364,32 +379,46 @@ def listen_for_speech_multilingual():
                     
                     return best_result['text'], final_lang
                 else:
+                    st.error("Could not understand audio in any supported language. Please try speaking again.")
                     return "Could not understand audio in any supported language", 'en'
             
             else:
                 # Use manually selected language
                 selected_lang = st.session_state.detected_language
                 google_lang_code = SUPPORTED_LANGUAGES[selected_lang]
-                text = recognizer.recognize_google(audio, language=google_lang_code)
-                
-                # Still run advanced detection for validation
-                detected_lang, confidence = advanced_language_detection(text)
-                
-                st.session_state.last_detection_details = {
-                    'recognition_lang': selected_lang,
-                    'detected_lang': detected_lang,
-                    'confidence': confidence,
-                    'manual_mode': True
-                }
-                
-                return text, detected_lang
+                try:
+                    text = recognizer.recognize_google(audio, language=google_lang_code)
+                    
+                    # Still run advanced detection for validation
+                    detected_lang, confidence = advanced_language_detection(text)
+                    
+                    st.session_state.last_detection_details = {
+                        'recognition_lang': selected_lang,
+                        'detected_lang': detected_lang,
+                        'confidence': confidence,
+                        'manual_mode': True
+                    }
+                    
+                    return text, detected_lang
+                except sr.UnknownValueError:
+                    st.error(f"Could not understand audio in {selected_lang}. Please try speaking again.")
+                    return "Could not understand audio", 'en'
+                except sr.RequestError as e:
+                    st.error(f"Error with speech recognition service: {e}")
+                    return f"Error with speech recognition service: {e}", 'en'
                 
         except sr.WaitTimeoutError:
+            st.error("Timeout: No speech detected. Please try speaking again.")
             return "Timeout: No speech detected", 'en'
         except sr.UnknownValueError:
+            st.error("Could not understand audio. Please try speaking again.")
             return "Could not understand audio", 'en'
         except sr.RequestError as e:
+            st.error(f"Error with speech recognition service: {e}")
             return f"Error with speech recognition service: {e}", 'en'
+        except Exception as e:
+            st.error(f"Error during speech recognition: {str(e)}")
+            return f"Error during speech recognition: {str(e)}", 'en'
 
 def speak_text_multilingual(text, language='en'):
     """Convert text to speech with enhanced language support using gTTS"""
@@ -455,67 +484,148 @@ def process_voice_input():
         st.error("Please authenticate first!")
         return
     
-    # Listen for speech
-    result = listen_for_speech_multilingual()
-    
-    if isinstance(result, tuple):
-        user_text, detected_lang = result
-    else:
-        user_text, detected_lang = result, 'en'
-    
-    if user_text and not any(error in user_text for error in ["Error", "Timeout", "Could not"]):
-        # Display detected language
-        lang_names = {
-            'en': 'English', 'hi': 'Hindi (हिंदी)', 'ta': 'Tamil (தமிழ்)', 
-            'te': 'Telugu (తెలుగు)', 'kn': 'Kannada (ಕನ್ನಡ)', 'ml': 'Malayalam (മലയാളം)',
-            'bn': 'Bengali (বাংলা)', 'gu': 'Gujarati (ગુજરાતી)', 'mr': 'Marathi (मराठी)',
-            'pa': 'Punjabi (ਪੰਜਾਬੀ)', 'or': 'Odia (ଓଡ଼ିଆ)', 'as': 'Assamese (অসমীয়া)', 'ur': 'Urdu (اردو)'
-        }
-        
-        detected_lang_name = lang_names.get(detected_lang, detected_lang)
-        st.success(f"🗣️ **Detected Language:** {detected_lang_name}")
-        
-        # Show detection details if available
-        if hasattr(st.session_state, 'last_detection_details'):
-            details = st.session_state.last_detection_details
-            with st.expander("🔍 Detection Details"):
-                if details.get('manual_mode'):
-                    st.info(f"**Manual Mode:** Used {lang_names.get(details['recognition_lang'], details['recognition_lang'])}")
+    while st.session_state.continuous_mode:
+        try:
+            # Listen for speech
+            result = listen_for_speech_multilingual()
+            
+            if isinstance(result, tuple):
+                user_text, detected_lang = result
+            else:
+                user_text, detected_lang = result, 'en'
+            
+            # Check if the text is too short (might indicate cutoff)
+            if len(user_text.split()) < 3 and not any(error in user_text for error in ["Error", "Timeout", "Could not"]):
+                st.warning("Speech might have been cut off. Please try speaking again.")
+                continue
+            
+            if user_text and not any(error in user_text for error in ["Error", "Timeout", "Could not"]):
+                # Display detected language
+                lang_names = {
+                    'en': 'English', 'hi': 'Hindi (हिंदी)', 'ta': 'Tamil (தமிழ்)'
+                }
+                
+                detected_lang_name = lang_names.get(detected_lang, detected_lang)
+                st.success(f"🗣️ **Detected Language:** {detected_lang_name}")
+                
+                # Show detection details if available
+                if hasattr(st.session_state, 'last_detection_details'):
+                    details = st.session_state.last_detection_details
+                    with st.expander("🔍 Detection Details"):
+                        if details.get('manual_mode'):
+                            st.info(f"**Manual Mode:** Used {lang_names.get(details['recognition_lang'], details['recognition_lang'])}")
+                        else:
+                            st.info(f"**Recognition Language:** {lang_names.get(details['recognition_lang'], details['recognition_lang'])}")
+                            st.info(f"**Detected Language:** {lang_names.get(details['detected_lang'], details['detected_lang'])}")
+                            st.info(f"**Confidence Score:** {details['confidence']:.2f}")
+                            st.info(f"**Total Score:** {details['total_score']:.2f}")
+                            st.info(f"**Languages Tried:** {details['all_results']}")
+                
+                st.success(f"📝 **You said:** {user_text}")
+                
+                # Add user input to conversation history
+                st.session_state.conversation_history.append(("user", user_text))
+                
+                # Get AI response with language context
+                with st.spinner("Getting AI response..."):
+                    ai_response = get_watsonx_response(
+                        st.session_state.conversation_history, 
+                        user_text, 
+                        st.session_state.bearer_token,
+                        detected_lang
+                    )
+                
+                if ai_response and not ai_response.startswith("Error"):
+                    # Add AI response to conversation history
+                    st.session_state.conversation_history.append(("assistant", ai_response))
+                    st.session_state.last_response = ai_response
+                    
+                    st.success(f"🤖 **AI Response:** {ai_response}")
+                    
+                    # Speak the response in appropriate language
+                    with st.spinner("Speaking response..."):
+                        speak_text_multilingual(ai_response, detected_lang)
                 else:
-                    st.info(f"**Recognition Language:** {lang_names.get(details['recognition_lang'], details['recognition_lang'])}")
-                    st.info(f"**Detected Language:** {lang_names.get(details['detected_lang'], details['detected_lang'])}")
-                    st.info(f"**Confidence Score:** {details['confidence']:.2f}")
-                    st.info(f"**Total Score:** {details['total_score']:.2f}")
-                    st.info(f"**Languages Tried:** {details['all_results']}")
-        
-        st.success(f"📝 **You said:** {user_text}")
-        
-        # Add user input to conversation history
-        st.session_state.conversation_history.append(("user", user_text))
-        
-        # Get AI response with language context
-        with st.spinner("Getting AI response..."):
-            ai_response = get_watsonx_response(
-                st.session_state.conversation_history, 
-                user_text, 
-                st.session_state.bearer_token,
-                detected_lang
-            )
-        
-        if ai_response and not ai_response.startswith("Error"):
-            # Add AI response to conversation history
-            st.session_state.conversation_history.append(("assistant", ai_response))
-            st.session_state.last_response = ai_response
-            
-            st.success(f"🤖 **AI Response:** {ai_response}")
-            
-            # Speak the response in appropriate language
-            with st.spinner("Speaking response..."):
-                speak_text_multilingual(ai_response, detected_lang)
-        else:
-            st.error(f"AI Error: {ai_response}")
-    else:
-        st.error(f"Speech Recognition Error: {user_text}")
+                    st.error(f"AI Error: {ai_response}")
+            else:
+                st.error(f"Speech Recognition Error: {user_text}")
+                # Don't break on error, continue listening
+                continue
+                
+        except Exception as e:
+            st.error(f"Error in voice processing: {str(e)}")
+            # Don't break on error, continue listening
+            continue
+
+def get_conversation_summary(conversation_history):
+    """Generate a summary of the conversation using Watsonx"""
+    if not conversation_history:
+        return "No conversation to summarize."
+    
+    # Format conversation for summary
+    conversation_text = "\n".join([f"{role}: {text}" for role, text in conversation_history])
+    
+    # Create summary prompt
+    summary_prompt = f"""Please provide a concise summary of the following conversation:
+
+{conversation_text}
+
+Summary:"""
+    
+    # Get summary from Watsonx
+    try:
+        summary = get_watsonx_response(
+            [],  # Empty history for summary
+            summary_prompt,
+            st.session_state.bearer_token,
+            'en'  # Always use English for summaries
+        )
+        return summary
+    except Exception as e:
+        return f"Error generating summary: {str(e)}"
+
+def send_summary_email(summary, recipient_email):
+    """Send conversation summary via email"""
+    try:
+        # Get email configuration from environment variables
+        sender_email = os.getenv("EMAIL_SENDER")
+        email_password = os.getenv("EMAIL_PASSWORD")
+        smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+        smtp_port = int(os.getenv("SMTP_PORT", "587"))
+
+        if not all([sender_email, email_password]):
+            return "Email configuration missing. Please set EMAIL_SENDER and EMAIL_PASSWORD in .env file."
+
+        # Create message
+        msg = MIMEMultipart()
+        msg['From'] = sender_email
+        msg['To'] = recipient_email
+        msg['Subject'] = f"Voice Bot Conversation Summary - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+
+        # Add summary to email body
+        body = f"""
+        <html>
+            <body>
+                <h2>Voice Bot Conversation Summary</h2>
+                <p>Here is the summary of your recent conversation:</p>
+                <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px;">
+                    {summary}
+                </div>
+                <p>This summary was generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            </body>
+        </html>
+        """
+        msg.attach(MIMEText(body, 'html'))
+
+        # Send email
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(sender_email, email_password)
+            server.send_message(msg)
+
+        return "Summary sent successfully!"
+    except Exception as e:
+        return f"Error sending email: {str(e)}"
 
 # Main UI
 st.title("🎙️ Multilingual Voice Bot with Watsonx LLM")
@@ -551,10 +661,7 @@ with col1:
 with col2:
     if not auto_detect:
         lang_options = {
-            'English': 'en', 'Hindi (हिंदी)': 'hi', 'Tamil (தமிழ்)': 'ta',
-            'Telugu (తెలుగు)': 'te', 'Kannada (ಕನ್ನಡ)': 'kn', 'Malayalam (മലയാളം)': 'ml',
-            'Bengali (বাংলা)': 'bn', 'Gujarati (ગુજરાતી)': 'gu', 'Marathi (मराठी)': 'mr',
-            'Punjabi (ਪੰਜਾਬੀ)': 'pa', 'Odia (ଓଡ଼ିଆ)': 'or', 'Assamese (অসমীয়া)': 'as', 'Urdu (اردو)': 'ur'
+            'English': 'en', 'Hindi (हिंदी)': 'hi', 'Tamil (தமிழ்)': 'ta'
         }
         
         selected_lang_name = st.selectbox(
@@ -579,13 +686,14 @@ st.header("🎤 Voice Interaction")
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    if st.button("🎙️ Start Voice Chat", disabled=not st.session_state.bearer_token):
+    if st.button("🎙️ Start Continuous Voice Chat", disabled=not st.session_state.bearer_token):
+        st.session_state.continuous_mode = True
         process_voice_input()
 
 with col2:
-    if st.button("🔊 Repeat Last Response", disabled=not st.session_state.last_response):
-        with st.spinner("Speaking..."):
-            speak_text_multilingual(st.session_state.last_response, st.session_state.detected_language)
+    if st.button("⏹️ Stop Voice Chat"):
+        st.session_state.continuous_mode = False
+        st.success("Voice chat stopped!")
 
 with col3:
     if st.button("🗑️ Clear Conversation"):
@@ -594,41 +702,6 @@ with col3:
         st.success("Conversation cleared!")
 
 st.markdown("---")
-
-# # Text input as backup
-# st.header("💬 Text Input (Backup)")
-# text_input = st.text_input("Type your message here (any language):")
-# if st.button("Send Text", disabled=not st.session_state.bearer_token):
-#     if text_input:
-#         # Detect language from text input
-#         detected_lang = detect_language_from_text(text_input)
-        
-#         # Add user input to conversation history
-#         st.session_state.conversation_history.append(("user", text_input))
-        
-#         # Get AI response
-#         with st.spinner("Getting AI response..."):
-#             ai_response = get_watsonx_response(
-#                 st.session_state.conversation_history, 
-#                 text_input, 
-#                 st.session_state.bearer_token,
-#                 detected_lang
-#             )
-        
-#         if ai_response and not ai_response.startswith("Error"):
-#             # Add AI response to conversation history
-#             st.session_state.conversation_history.append(("assistant", ai_response))
-#             st.session_state.last_response = ai_response
-            
-#             st.success(f"AI Response: {ai_response}")
-            
-#             # Option to speak the response
-#             if st.button("🔊 Speak Response"):
-#                 speak_text_multilingual(ai_response, detected_lang)
-#         else:
-#             st.error(f"AI Error: {ai_response}")
-
-# st.markdown("---")
 
 # Conversation history display
 st.header("📝 Conversation History")
@@ -644,58 +717,56 @@ if st.session_state.conversation_history:
 else:
     st.info("No conversation yet. Start by clicking 'Start Voice Chat' or typing a message.")
 
-# # Settings section
-# st.markdown("---")
-# st.header("⚙️ Settings & Information")
+# Add this after the conversation history display section
+st.markdown("---")
+st.header("📊 Conversation Summary")
 
-# with st.expander("🌍 Supported Languages"):
-#     st.markdown("""
-#     **Currently Supported Languages:**
-#     - 🇺🇸 **English** (en-US)
-#     - 🇮🇳 **Hindi** (hi-IN) - हिंदी
-#     - 🇮🇳 **Tamil** (ta-IN) - தமிழ்
-#     - 🇮🇳 **Telugu** (te-IN) - తెలుగు
-#     - 🇮🇳 **Kannada** (kn-IN) - ಕನ್ನಡ
-#     - 🇮🇳 **Malayalam** (ml-IN) - മലയാളം
-#     - 🇮🇳 **Bengali** (bn-IN) - বাংলা
-#     - 🇮🇳 **Gujarati** (gu-IN) - ગુજરાતી
-#     - 🇮🇳 **Marathi** (mr-IN) - मराठी
-#     - 🇮🇳 **Punjabi** (pa-IN) - ਪੰਜਾਬੀ
-#     - 🇮🇳 **Odia** (or-IN) - ଓଡ଼ିଆ
-#     - 🇮🇳 **Assamese** (as-IN) - অসমীয়া
-#     - 🇮🇳 **Urdu** (ur-IN) - اردو
-#     """)
+# Add email input field
+email_address = st.text_input("Enter email address to receive summary:", key="summary_email")
 
+# Add a button to generate and send summary
+col1, col2 = st.columns(2)
+with col1:
+    if st.button("Generate Summary"):
+        with st.spinner("Generating conversation summary..."):
+            summary = get_conversation_summary(st.session_state.conversation_history)
+            st.markdown("### Summary")
+            st.markdown(summary)
+            
+            # Store summary in session state
+            st.session_state.last_summary = summary
 
+with col2:
+    if st.button("Send Summary via Email", disabled=not email_address):
+        if not st.session_state.get('last_summary'):
+            st.warning("Please generate a summary first!")
+        else:
+            with st.spinner("Sending summary via email..."):
+                result = send_summary_email(st.session_state.last_summary, email_address)
+                if "successfully" in result:
+                    st.success(result)
+                else:
+                    st.error(result)
 
-
-
-# # Add voice debugging to the settings section
-# with st.expander("🔊 Voice Settings"):
-#     st.markdown("""
-#     **Text-to-Speech Engine:**
-#     - Primary: Google Text-to-Speech (gTTS)
-#     - Fallback: pyttsx3
-    
-#     **Supported Languages:**
-#     - 🇺🇸 English (en)
-#     - 🇮🇳 Hindi (hi)
-#     - 🇮🇳 Tamil (ta)
-#     - 🇮🇳 Telugu (te)
-#     - 🇮🇳 Kannada (kn)
-#     - 🇮🇳 Malayalam (ml)
-#     - 🇮🇳 Bengali (bn)
-#     - 🇮🇳 Gujarati (gu)
-#     - 🇮🇳 Marathi (mr)
-#     - 🇮🇳 Punjabi (pa)
-#     - 🇮🇳 Odia (or)
-#     - 🇮🇳 Assamese (as)
-#     - 🇮🇳 Urdu (ur)
-#     """)
-    
-#     if st.button("Show Available System Voices"):
-#         voices = get_available_voices()
-#         st.json(voices)
+# Add automatic summary every 5 messages
+if len(st.session_state.conversation_history) > 0 and len(st.session_state.conversation_history) % 5 == 0:
+    with st.spinner("Generating periodic summary..."):
+        summary = get_conversation_summary(st.session_state.conversation_history)
+        st.markdown("### Periodic Summary")
+        st.markdown(summary)
+        
+        # Store summary in session state
+        st.session_state.last_summary = summary
+        
+        # If email is provided, offer to send the periodic summary
+        if email_address:
+            if st.button("Send Periodic Summary via Email"):
+                with st.spinner("Sending periodic summary via email..."):
+                    result = send_summary_email(summary, email_address)
+                    if "successfully" in result:
+                        st.success(result)
+                    else:
+                        st.error(result)
 
 # Status indicators
 st.sidebar.header("📊 Status")
@@ -705,9 +776,7 @@ st.sidebar.info(f"💬 Messages: {len(st.session_state.conversation_history)}")
 # Current language status
 if st.session_state.detected_language:
     lang_names = {
-        'en': 'English', 'hi': 'Hindi', 'ta': 'Tamil', 'te': 'Telugu',
-        'kn': 'Kannada', 'ml': 'Malayalam', 'bn': 'Bengali', 'gu': 'Gujarati',
-        'mr': 'Marathi', 'pa': 'Punjabi', 'or': 'Odia', 'as': 'Assamese', 'ur': 'Urdu'
+        'en': 'English', 'hi': 'Hindi', 'ta': 'Tamil'
     }
     current_lang = lang_names.get(st.session_state.detected_language, 'Unknown')
     st.sidebar.info(f"🗣️ Language: {current_lang}")
