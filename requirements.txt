@@ -1,0 +1,8 @@
+streamlit
+SpeechRecognition
+pyttsx3
+requests
+python-dotenv
+pygame
+gTTS
+langdetect
