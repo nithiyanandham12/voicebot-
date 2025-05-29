@@ -6,4 +6,5 @@ python-dotenv
 pygame
 gTTS
 langdetect
-PyAudio
+PyAudio==0.2.13
+
