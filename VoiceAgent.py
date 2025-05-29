@@ -14,17 +14,18 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 try:
     from langdetect import detect
-    from langdetect.lang_detect_exception import LangDetectError
     LANGDETECT_AVAILABLE = True
 except ImportError:
+    print("Warning: langdetect not available. Using fallback language detection.")
     LANGDETECT_AVAILABLE = False
-    print("Warning: langdetect not available. Using advanced pattern-based detection.")
-
 import re
 from collections import Counter
 from gtts import gTTS
 import pygame
 import base64
+from collections import defaultdict
+import math
+import numpy as np
 
 # Initialize pygame mixer with error handling
 try:
@@ -44,33 +45,302 @@ st.set_page_config(
     layout="wide"
 )
 
-# Advanced language detection patterns and keywords
+bot_name = "ava"
+
+# Script ranges for Indian languages
+SCRIPT_RANGES = {
+    'en': (0x0041, 0x007A),  # Latin (English)
+    'hi': (0x0900, 0x097F),  # Devanagari
+    'ta': (0x0B80, 0x0BFF),  # Tamil
+}
+
+# Common words and patterns for each language
 LANGUAGE_PATTERNS = {
     'hi': {
-        'keywords': ['हैं', 'है', 'का', 'के', 'की', 'को', 'में', 'से', 'और', 'या', 'भी', 'नहीं', 'अपने', 'उसका', 'इसका', 'जो', 'कि', 'था', 'थी', 'होगा', 'होगी', 'कैसे', 'क्यों', 'कहाँ', 'कब'],
-        'chars': range(0x0900, 0x097F),  # Devanagari
-        'common_endings': ['ने', 'से', 'को', 'में', 'पर', 'ता', 'ती', 'ते'],
-        'script_name': 'Devanagari'
+        'words': [
+            # Common verbs
+            'हैं', 'है', 'था', 'थी', 'थे', 'होगा', 'होगी', 'होंगे', 'करना', 'करेंगे', 'करूंगा', 'करेंगी',
+            'आना', 'जाना', 'खाना', 'पीना', 'सोना', 'उठना', 'बैठना', 'देखना', 'सुनना', 'बोलना',
+            'पढ़ना', 'लिखना', 'चलना', 'दौड़ना', 'हंसना', 'रोना', 'गाना', 'नाचना', 'खेलना', 'काम करना',
+            # Common pronouns
+            'मैं', 'हम', 'तुम', 'आप', 'वह', 'यह', 'वे', 'ये', 'मुझे', 'हमें', 'तुम्हें', 'आपको',
+            'मेरा', 'मेरी', 'मेरे', 'हमारा', 'हमारी', 'हमारे', 'तुम्हारा', 'तुम्हारी', 'तुम्हारे',
+            'आपका', 'आपकी', 'आपके', 'उसका', 'उसकी', 'उसके', 'इसका', 'इसकी', 'इसके',
+            # Common postpositions
+            'का', 'के', 'की', 'को', 'में', 'से', 'पर', 'तक', 'द्वारा', 'साथ', 'बिना', 'लिए',
+            'ऊपर', 'नीचे', 'आगे', 'पीछे', 'बीच', 'पास', 'दूर', 'अंदर', 'बाहर', 'सामने',
+            # Common conjunctions
+            'और', 'या', 'लेकिन', 'क्योंकि', 'अगर', 'तो', 'मगर', 'परंतु', 'इसलिए', 'कि',
+            'जब', 'जैसे', 'जितना', 'जहां', 'तब', 'वैसे', 'उतना', 'वहां', 'फिर', 'अभी',
+            # Common question words
+            'क्या', 'कौन', 'कहाँ', 'कब', 'कैसे', 'क्यों', 'कितना', 'कौन सा', 'किसका', 'किससे',
+            # Common adjectives
+            'अच्छा', 'बुरा', 'बड़ा', 'छोटा', 'नया', 'पुराना', 'ठंडा', 'गरम', 'सुंदर', 'बदसूरत',
+            'लंबा', 'छोटा', 'मोटा', 'पतला', 'तेज़', 'धीमा', 'ऊंचा', 'नीचा', 'रंगीन', 'सफ़ेद',
+            'काला', 'लाल', 'हरा', 'नीला', 'पीला', 'गुलाबी', 'भूरा', 'धूसर',
+            # Common adverbs
+            'बहुत', 'थोड़ा', 'ज्यादा', 'कम', 'अभी', 'फिर', 'भी', 'नहीं', 'हां', 'जी',
+            'कल', 'आज', 'कभी', 'हमेशा', 'जल्दी', 'देर', 'धीरे', 'तेज़ी', 'यहाँ', 'वहाँ',
+            # Numbers
+            'एक', 'दो', 'तीन', 'चार', 'पांच', 'छह', 'सात', 'आठ', 'नौ', 'दस',
+            'ग्यारह', 'बारह', 'तेरह', 'चौदह', 'पंद्रह', 'सोलह', 'सत्रह', 'अठारह', 'उन्नीस', 'बीस',
+            # Time expressions
+            'सुबह', 'दोपहर', 'शाम', 'रात', 'दिन', 'हफ्ता', 'महीना', 'साल', 'समय', 'घंटा',
+            # Common nouns
+            'घर', 'परिवार', 'माता', 'पिता', 'भाई', 'बहन', 'बच्चा', 'आदमी', 'औरत', 'लड़का', 'लड़की',
+            'पानी', 'खाना', 'रोटी', 'चावल', 'दूध', 'चाय', 'कॉफी', 'फल', 'सब्जी'
+        ],
+        'patterns': [
+            # Verb patterns - Present tense
+            r'[ता|ती|ते]\s+[हैं|है|हूं]',
+            r'[रहा|रही|रहे]\s+[हैं|है|हूं]',
+            r'[चुका|चुकी|चुके]\s+[हैं|है|हूं]',
+            # Verb patterns - Past tense
+            r'[आ|ई|ए]\s+[था|थी|थे]',
+            r'[करके|आकर|जाकर|देखकर]',
+            # Verb patterns - Future tense
+            r'[गा|गी|गे]',
+            r'[ऊंगा|ऊंगी|ेंगे|ेंगी]',
+            # Postposition patterns
+            r'[का|के|की|को|में|से|पर|तक]',
+            r'[द्वारा|साथ|बिना|लिए]',
+            r'[ऊपर|नीचे|आगे|पीछे|बीच|पास|दूर|अंदर|बाहर]',
+            # Question patterns
+            r'क्[या|यों|या]',
+            r'[कहाँ|कब|कैसे|क्यों|कितना|कौन]',
+            # Word ending patterns
+            r'[ने|से|को|में|पर|ता|ती|ते]$',
+            r'[गा|गी|गे|ना|नी|ने]$',
+            r'[वाला|वाली|वाले]$',
+            r'[इया|ियां|इयों]$',
+            # Honorific patterns
+            r'[जी|साहब|महोदय|श्रीमान|श्रीमती]',
+            # Conjunctive particles
+            r'[भी|तो|ही|तक|सिर्फ|केवल]',
+            # Common Hindi word patterns
+            r'[हिंदी|भारत|देश|समय|दिन|रात|सुबह|शाम]',
+            # Compound verb patterns
+            r'[दे|ले|आ|जा]\s+[दिया|लिया|आया|गया]',
+            # Negative patterns
+            r'न[हीं|ही]',
+            r'मत',
+            # Conditional patterns
+            r'[अगर|यदि].*तो',
+            # Relative-correlative patterns
+            r'[जो|जिस|जहां].*[वो|उस|वहां]'
+        ]
     },
     'ta': {
-        'keywords': ['அது', 'இது', 'என்', 'உன்', 'அவன்', 'அவள்', 'நான்', 'நீ', 'அவர்', 'இங்கே', 'அங்கே', 'எங்கே', 'எப்போது', 'எதற்கு', 'எப்படி', 'ஆம்', 'இல்லை', 'மற்றும்', 'அல்லது', 'ஆனால்', 'என்றால்', 'போல்', 'மேல்', 'கீழ்', 'உள்ளே', 'வெளியே'],
-        'chars': range(0x0B80, 0x0BFF),  # Tamil
-        'common_endings': ['ான்', 'ாள்', 'ார்', 'ிது', 'ிள்', 'ுது', 'ேன்', 'ோம்'],
-        'script_name': 'Tamil'
-
+        'words': [
+            # Common pronouns
+            'நான்', 'நாங்கள்', 'நாம்', 'நீ', 'நீங்கள்', 'அவன்', 'அவள்', 'அவர்', 'அவர்கள்', 
+            'இது', 'அது', 'இவை', 'அவை', 'எது', 'யார்', 'எவர்',
+            'என்', 'எங்கள்', 'எனது', 'எங்களது', 'உன்', 'உங்கள்', 'உனது', 'உங்களது',
+            'அவன்', 'அவனது', 'அவள்', 'அவளது', 'அவர்', 'அவரது', 'அவர்கள்', 'அவர்களது',
+            # Common verbs
+            'உள்ளது', 'இல்லை', 'வருகிறேன்', 'போகிறேன்', 'செய்கிறேன்', 'பார்க்கிறேன்', 'கேட்கிறேன்',
+            'வந்தேன்', 'போனேன்', 'செய்தேன்', 'பார்த்தேன்', 'கேட்டேன்', 'சாப்பிட்டேன்', 'குடித்தேன்',
+            'வருவேன்', 'போவேன்', 'செய்வேன்', 'பார்ப்பேன்', 'கேட்பேன்', 'சாப்பிடுவேன்', 'குடிப்பேன்',
+            'படிக்கிறேன்', 'எழுதுகிறேன்', 'நடக்கிறேன்', 'ஓடுகிறேன்', 'சிரிக்கிறேன்', 'அழுகிறேன்',
+            'பாடுகிறேன்', 'ஆடுகிறேன்', 'விளையாடுகிறேன்', 'வேலை செய்கிறேன்',
+            # Common postpositions
+            'இல்', 'இடம்', 'வரை', 'மூலம்', 'ஆக', 'ஆல்', 'உடன்', 'இல்லாமல்', 'போல்',
+            'மேல்', 'கீழ்', 'முன்', 'பின்', 'நடுவில்', 'அருகில்', 'தொலைவில்', 'உள்ளே', 'வெளியே',
+            # Common conjunctions
+            'மற்றும்', 'அல்லது', 'ஆனால்', 'என்றால்', 'ஏனெனில்', 'ஆகையால்', 'எனவே',
+            'எப்போது', 'போல்', 'எவ்வளவு', 'எங்கே', 'எப்படி', 'இன்னும்', 'கூட',
+            # Common question words
+            'என்ன', 'எப்படி', 'எங்கே', 'எப்போது', 'ஏன்', 'எத்தனை', 'எந்த', 'யார்',
+            'எது', 'எவர்', 'எவை', 'எதை', 'யாரை', 'எங்கிருந்து', 'எங்கு',
+            # Common adjectives
+            'நல்ல', 'கெட்ட', 'பெரிய', 'சிறிய', 'புதிய', 'பழைய', 'குளிர்ந்த', 'சூடான',
+            'நீண்ட', 'குறுகிய', 'தடிமான', 'மெல்லிய', 'வேகமான', 'மெதுவான', 'உயர்ந்த', 'தாழ்ந்த',
+            'அழகான', 'அசிங்கமான', 'வெள்ளை', 'கருப்பு', 'சிவப்பு', 'பச்சை', 'நீலம்', 'மஞ்சள்',
+            'இளஞ்சிவப்பு', 'பழுப்பு', 'சாம்பல்',
+            # Common adverbs
+            'மிகவும்', 'கொஞ்சம்', 'அதிகம்', 'குறைவாக', 'இப்போது', 'மீண்டும்', 'உம்', 'இல்லை',
+            'நேற்று', 'இன்று', 'நாளை', 'எப்போதும்', 'எப்போதாவது', 'சீக்கிரம்', 'தாமதம்', 'மெதுவாக',
+            # Numbers
+            'ஒன்று', 'இரண்டு', 'மூன்று', 'நான்கு', 'ஐந்து', 'ஆறு', 'ஏழு', 'எட்டு', 'ஒன்பது', 'பத்து',
+            'பதினொன்று', 'பனிரெண்டு', 'பதிமூன்று', 'பதினான்கு', 'பதினைந்து', 'பதினாறு', 'பதினேழு',
+            'பதினெட்டு', 'பத்தொன்பது', 'இருபது',
+            # Time expressions
+            'காலை', 'மதியம்', 'மாலை', 'இரவு', 'நாள்', 'வாரம்', 'மாதம்', 'வருடம்', 'நேரம்', 'மணி',
+            # Common nouns
+            'வீடு', 'குடும்பம்', 'அம்மா', 'அப்பா', 'அண்ணன்', 'தம்பி', 'அக்காள்', 'தங்கை',
+            'குழந்தை', 'ஆண்', 'பெண்', 'பையன்', 'பெண்',
+            'தண்ணீர்', 'சாப்பாடு', 'சோறு', 'ரொட்டி', 'பால்', 'டீ', 'காபி', 'பழம்', 'காய்கறி'
+        ],
+        'patterns': [
+            # Verb patterns - Present tense
+            r'[கிற|ற][ேன்|ாய்|ான்|ாள்|ார்|ோம்|ீர்கள்|ார்கள்]',
+            r'[ன்|ள்|ர்|ம்|ங்கள்]$',
+            # Verb patterns - Past tense
+            r'[ந்த|ட்ட|த்த|ற்ற][ேன்|ாய்|ான்|ாள்|ார்|ோம்|ீர்கள்|ார்கள்]',
+            r'[த்|ட்|ன்|ர்][த|ட]',
+            # Verb patterns - Future tense
+            r'[வ|ப்ப|ட்][ேன்|ாய்|ான்|ாள்|ார்|ோம்|ீர்கள்|ார்கள்]',
+            # Question patterns
+            r'[என்ன|எப்படி|எங்கே|எப்போது|ஏன்|எத்தனை|யார்]',
+            r'[எது|எந்த|எவர்|எவை]',
+            # Word ending patterns
+            r'[ன்|ள்|ர்|து|ும்|ேன்|ோம்|ால்|உக்கு|இல்|அது]$',
+            r'[கிற|ந்த|வ|க்கு|வில்|டு|ஆல்|உடன்]',
+            # Postposition patterns
+            r'[இல்|வில்|ஆல்|உடன்|மூலம்|வரை|பிறகு]',
+            r'[மேல்|கீழ்|முன்|பின்|அருகில்|நடுவில்]',
+            # Case marker patterns
+            r'[ஐ|அ|உக்கு|ஆல்|இல்|ிடம்|ோடு]$',
+            # Honorific patterns
+            r'[அவர்கள்|தாங்கள்|இவர்கள்]',
+            # Plural patterns
+            r'[கள்|ங்கள்]$',
+            # Compound verb patterns
+            r'[கொண்டு|விட்டு|போட்டு]\s+[வர|போ|கொள்|தர|கொடு]',
+            # Common Tamil word patterns
+            r'[தமிழ்|இந்தியா|நாடு|காலம்|நாள்|இரவு|காலை|மாலை]',
+            # Number patterns with Tamil numerals
+            r'[௧|௨|௩|௪|௫|௬|௭|௮|௯|௦]',
+            # Conjunctive particles
+            r'[உம்|ேனும்|ாவது|கூட|மட்டும்|தான்]',
+            # Relative patterns
+            r'[எந்த|எவ].*[அந்த|அவ]',
+            # Negative patterns
+            r'[இல்லை|மாட்|ாமல்|வேண்டாம்]',
+            # Special Telugu patterns
+            r'[ஆ|ஈ|ஊ|ஏ|ஐ|ஓ|ஔ]',
+            r'[க்|ங்|ச்|ஞ்|ட்|ண்|த்|ந்|ப்|ம்|ய்|ர்|ல்|வ்|ழ்|ள்|ற்|ன்]'
+        ]
     },
     'en': {
-        'keywords': ['the', 'be', 'to', 'of', 'and', 'a', 'in', 'that', 'have', 'i', 'it', 'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at', 'this', 'but', 'his', 'by', 'from', 'they', 'we', 'say', 'her', 'she', 'or', 'an', 'will', 'my', 'one', 'all', 'would', 'there', 'their'],
-        'chars': range(0x0020, 0x007F),  # ASCII
-        'common_endings': ['ing', 'ed', 'er', 'ly', 'tion', 'ness', 'ment'],
-        'script_name': 'Latin'
+        'words': [
+            # Common verbs
+            'is', 'are', 'was', 'were', 'will', 'have', 'has', 'had', 'do', 'does', 'did',
+            'can', 'could', 'would', 'should', 'may', 'might', 'must', 'shall', 'ought',
+            'go', 'come', 'see', 'get', 'make', 'take', 'give', 'know', 'think', 'feel',
+            'want', 'need', 'like', 'love', 'hate', 'work', 'play', 'run', 'walk', 'talk',
+            'eat', 'drink', 'sleep', 'wake', 'read', 'write', 'listen', 'watch', 'look',
+            # Common pronouns
+            'I', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her', 'us', 'them',
+            'my', 'your', 'his', 'her', 'its', 'our', 'their', 'mine', 'yours', 'hers', 'ours', 'theirs',
+            'this', 'that', 'these', 'those', 'who', 'whom', 'whose', 'which', 'what',
+            'myself', 'yourself', 'himself', 'herself', 'itself', 'ourselves', 'themselves',
+            # Common prepositions and articles
+            'the', 'a', 'an', 'in', 'on', 'at', 'to', 'for', 'with', 'by', 'from', 'of',
+            'up', 'down', 'over', 'under', 'above', 'below', 'between', 'among', 'through',
+            'during', 'before', 'after', 'since', 'until', 'about', 'around', 'near', 'far',
+            'inside', 'outside', 'behind', 'beside', 'against', 'toward', 'towards',
+            # Common conjunctions
+            'and', 'or', 'but', 'because', 'if', 'then', 'although', 'while', 'since',
+            'unless', 'until', 'when', 'where', 'why', 'how', 'whether', 'either', 'neither',
+            'both', 'not only', 'as well as', 'however', 'therefore', 'moreover', 'furthermore',
+            # Common question words
+            'what', 'who', 'where', 'when', 'how', 'why', 'which', 'whose', 'whom',
+            # Common adjectives
+            'good', 'bad', 'big', 'small', 'new', 'old', 'hot', 'cold', 'long', 'short',
+            'tall', 'high', 'low', 'fast', 'slow', 'easy', 'hard', 'light', 'dark', 'heavy',
+            'beautiful', 'ugly', 'nice', 'kind', 'mean', 'smart', 'stupid', 'funny', 'serious',
+            'happy', 'sad', 'angry', 'excited', 'tired', 'hungry', 'thirsty', 'sick', 'healthy',
+            'rich', 'poor', 'young', 'old', 'strong', 'weak', 'clean', 'dirty', 'full', 'empty',
+            # Common adverbs
+            'very', 'much', 'many', 'few', 'now', 'then', 'also', 'not', 'yes', 'no',
+            'here', 'there', 'everywhere', 'somewhere', 'nowhere', 'always', 'never', 'sometimes',
+            'often', 'usually', 'rarely', 'today', 'yesterday', 'tomorrow', 'soon', 'late',
+            'early', 'quickly', 'slowly', 'carefully', 'loudly', 'quietly', 'well', 'badly',
+            # Numbers
+            'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+            'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen',
+            'eighteen', 'nineteen', 'twenty', 'thirty', 'forty', 'fifty', 'hundred', 'thousand',
+            # Time expressions
+            'morning', 'afternoon', 'evening', 'night', 'day', 'week', 'month', 'year', 'time', 'hour',
+            'minute', 'second', 'moment', 'while', 'period', 'season', 'spring', 'summer', 'fall', 'winter',
+            # Common nouns
+            'person', 'people', 'man', 'woman', 'child', 'family', 'friend', 'house', 'home', 'school',
+            'work', 'job', 'money', 'food', 'water', 'car', 'book', 'phone', 'computer', 'internet'
+        ],
+        'patterns': [
+            # Common word patterns with word boundaries
+            r'\b(the|and|that|have|with|this|but|from|they|would|there|been|many|some|time)\b',
+            r'\b(which|their|said|each|she|way|make|use|her|could|water|than|first|who)\b',
+            r'\b(its|now|find|long|down|day|did|get|come|made|may|part)\b',
+            
+            # Verb patterns
+            r'\b\w+ing\b',  # Present participle
+            r'\b\w+ed\b',   # Past tense/past participle
+            r'\b\w+s\b',    # Third person singular
+            r'\b\w+ly\b',   # Adverbs
+            
+            # Modal verbs
+            r'\b(can|could|will|would|shall|should|may|might|must|ought)\b',
+            
+            # Auxiliary verbs
+            r'\b(is|are|was|were|am|be|being|been)\b',
+            r'\b(have|has|had|having)\b',
+            r'\b(do|does|did|doing|done)\b',
+            
+            # Common prefixes
+            r'\bun\w+',     # un-
+            r'\bre\w+',     # re-
+            r'\bpre\w+',    # pre-
+            r'\bdis\w+',    # dis-
+            r'\bmis\w+',    # mis-
+            r'\bover\w+',   # over-
+            r'\bunder\w+',  # under-
+            r'\bout\w+',    # out-
+            r'\bup\w+',     # up-
+            
+            # Common suffixes
+            r'\w+tion\b',   # -tion
+            r'\w+sion\b',   # -sion
+            r'\w+ness\b',   # -ness
+            r'\w+ment\b',   # -ment
+            r'\w+able\b',   # -able
+            r'\w+ible\b',   # -ible
+            r'\w+ful\b',    # -ful
+            r'\w+less\b',   # -less
+            r'\w+ship\b',   # -ship
+            r'\w+hood\b',   # -hood
+            
+            # Comparative and superlative
+            r'\w+er\b',     # -er (comparative)
+            r'\w+est\b',    # -est (superlative)
+            
+            # Question patterns
+            r'\b(what|who|where|when|why|how|which|whose)\b.*\?',
+            r'\b(is|are|do|does|did|can|could|will|would)\b.*\?',
+            
+            # Contractions
+            r"\b\w+'(t|s|re|ve|ll|d|m)\b",  # Common contractions
+            
+            # Possessive patterns
+            r"\b\w+'s\b",   # Possessive 's
+            r"\b\w+s'\b",   # Plural possessive
+            
+            # Sentence starters
+            r'\b(The|A|An|This|That|These|Those|My|Your|His|Her|Our|Their)\b',
+            
+            # Common English phrases
+            r'\b(as well as|in order to|such as|more than|less than|at least|at most)\b',
+            r'\b(not only|but also|either or|neither nor|both and)\b',
+            
+            # Time expressions
+            r'\b(in the morning|in the afternoon|in the evening|at night)\b',
+            r'\b(last year|next year|this year|every day|every week)\b',
+            
+            # Frequency adverbs
+            r'\b(always|usually|often|sometimes|rarely|never|seldom)\b',
+            
+            # Intensifiers
+            r'\b(very|quite|rather|pretty|fairly|extremely|incredibly|absolutely)\b'
+        ]
     }
 }
+
+# Supported languages for speech recognition
 SUPPORTED_LANGUAGES = {
     'en': 'en-US',      # English
     'hi': 'hi-IN',      # Hindi
     'ta': 'ta-IN',      # Tamil
-
 }
 
 # TTS Language mapping for gTTS
@@ -96,216 +366,196 @@ if 'auto_detect' not in st.session_state:
 if 'continuous_mode' not in st.session_state:
     st.session_state.continuous_mode = False
 
-# Your existing Watsonx functions
-def get_bearer_token(api_key):
-    url = "https://iam.cloud.ibm.com/identity/token"
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    data = f"apikey={api_key}&grant_type=urn:ibm:params:oauth:grant-type:apikey"
+# Language n-gram models
+LANGUAGE_NGRAMS = {
+    'en': {
+        'unigrams': defaultdict(float),
+        'bigrams': defaultdict(float),
+        'trigrams': defaultdict(float)
+    },
+    'hi': {
+        'unigrams': defaultdict(float),
+        'bigrams': defaultdict(float),
+        'trigrams': defaultdict(float)
+    },
+    'ta': {
+        'unigrams': defaultdict(float),
+        'bigrams': defaultdict(float),
+        'trigrams': defaultdict(float)
+    }
+}
 
-    response = requests.post(url, headers=headers, data=data)
+# Pre-computed language statistics
+LANGUAGE_STATS = {
+    'en': {
+        'avg_word_length': 4.7,
+        'common_chars': set('etaoinshrdlu'),
+        'vowel_ratio': 0.4,
+        'consonant_clusters': ['th', 'st', 'ch', 'sh', 'ph', 'wh'],
+        'common_endings': ['ing', 'ed', 'ion', 'ity', 'ment', 'ness'],
+        'script_ratio': 0.95
+    },
+    'hi': {
+        'avg_word_length': 5.2,
+        'common_chars': set('कखगघङचछजझञटठडढणतथदधनपफबभमयरलवशषसह'),
+        'vowel_ratio': 0.35,
+        'consonant_clusters': ['क्र', 'त्र', 'श्र', 'ज्ञ', 'द्व'],
+        'common_endings': ['ता', 'ती', 'ते', 'गा', 'गी', 'गे'],
+        'script_ratio': 0.98
+    },
+    'ta': {
+        'avg_word_length': 4.8,
+        'common_chars': set('கஙசஞடணதநபமயரலவழளறன'),
+        'vowel_ratio': 0.38,
+        'consonant_clusters': ['க்ஷ', 'ஸ்ரீ', 'ஜ்ஞ'],
+        'common_endings': ['கிற', 'ந்த', 'வ', 'ப்ப', 'ட்'],
+        'script_ratio': 0.97
+    }
+}
 
-    if response.status_code == 200:
-        return response.json()["access_token"]
-    else:
-        st.error(f"Failed to retrieve access token: {response.text}")
-        return None
+def calculate_ngrams(text, n):
+    """Calculate n-grams from text"""
+    words = text.split()
+    ngrams = defaultdict(int)
+    for word in words:
+        for i in range(len(word) - n + 1):
+            ngram = word[i:i+n]
+            ngrams[ngram] += 1
+    return ngrams
 
-def clean_ai_response(response_text):
-    """Clean the AI response by removing template tags and unwanted text"""
-    if not response_text:
-        return response_text
+def calculate_language_features(text):
+    """Calculate various language features from text"""
+    words = text.split()
+    chars = ''.join(words)
     
-    # Remove common template tags
-    unwanted_patterns = [
-        "assistant<|end_header_id|>",
-        "<|start_header_id|>assistant<|end_header_id|>",
-        "<|eot_id|>",
-        "<|start_header_id|>",
-        "<|end_header_id|>",
-        "**",
-        "assistant<|end_header_id|>\n\n",
-        "assistant<|end_header_id|>\n",
-    ]
+    # Basic statistics
+    avg_word_length = sum(len(word) for word in words) / len(words) if words else 0
     
-    cleaned_response = response_text
-    for pattern in unwanted_patterns:
-        cleaned_response = cleaned_response.replace(pattern, "")
+    # Character distribution
+    char_freq = defaultdict(int)
+    for char in chars:
+        char_freq[char] += 1
     
-    # Remove leading/trailing whitespace and newlines
-    cleaned_response = cleaned_response.strip()
+    # Vowel and consonant analysis
+    vowels = set('aeiouAEIOU')
+    vowel_count = sum(1 for char in chars if char in vowels)
+    vowel_ratio = vowel_count / len(chars) if chars else 0
     
-    return cleaned_response
-
-def get_watsonx_response(history, user_input, bearer_token, detected_lang='en'):
-    url = "https://us-south.ml.cloud.ibm.com/ml/v1/text/generation?version=2023-05-29"
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "Authorization": f"Bearer {bearer_token}"
+    # Script analysis
+    script_chars = {
+        'en': sum(1 for c in chars if 0x0041 <= ord(c) <= 0x007A),
+        'hi': sum(1 for c in chars if 0x0900 <= ord(c) <= 0x097F),
+        'ta': sum(1 for c in chars if 0x0B80 <= ord(c) <= 0x0BFF)
+    }
+    
+    # Common patterns
+    common_endings = defaultdict(int)
+    for word in words:
+        if len(word) >= 3:
+            common_endings[word[-3:]] += 1
+    
+    # Consonant clusters
+    consonant_clusters = defaultdict(int)
+    for word in words:
+        for i in range(len(word) - 1):
+            if word[i].isalpha() and word[i+1].isalpha():
+                consonant_clusters[word[i:i+2]] += 1
+    
+    return {
+        'avg_word_length': avg_word_length,
+        'char_freq': dict(char_freq),
+        'vowel_ratio': vowel_ratio,
+        'script_chars': script_chars,
+        'common_endings': dict(common_endings),
+        'consonant_clusters': dict(consonant_clusters)
     }
 
-    # Add language context to the conversation
-    language_context = ""
-    if detected_lang != 'en':
-        lang_names = {
-            'hi': 'Hindi', 'ta': 'Tamil'
-        }
-        lang_name = lang_names.get(detected_lang, 'regional language')
-        language_context = f"The user is speaking in {lang_name}. Please respond appropriately and consider the cultural context. If needed, you can respond in English or the same language as appropriate."
-
-    # Construct the conversation history
-    conversation = ""
-    if language_context:
-        conversation += f"<|start_header_id|>system<|end_header_id|>\n\n{language_context}<|eot_id|>\n"
-    
-    conversation += "".join(
-        f"<|start_header_id|>{role}<|end_header_id|>\n\n{text}<|eot_id|>\n" 
-        for role, text in history
-    )
-    
-    conversation += f"<|start_header_id|>user<|end_header_id|>\n\n{user_input}<|eot_id|>\n"
-
-    payload = {
-        "input": conversation,
-        "parameters": {
-            "decoding_method": "greedy",
-            "max_new_tokens": 8100,
-            "min_new_tokens": 0,
-            "stop_sequences": [],
-            "repetition_penalty": 1
-        },
-        "model_id": "meta-llama/llama-3-3-70b-instruct",
-        "project_id": os.getenv("PROJECT_ID")
+def calculate_language_score(text, lang):
+    """Calculate language score using multiple features"""
+    features = calculate_language_features(text)
+    stats = LANGUAGE_STATS[lang]
+    score = 0.0
+    weights = {
+        'script': 0.4,
+        'word_length': 0.1,
+        'vowel_ratio': 0.1,
+        'endings': 0.2,
+        'clusters': 0.1,
+        'char_freq': 0.1
     }
-
-    response = requests.post(url, headers=headers, json=payload)
-
-    if response.status_code == 200:
-        response_data = response.json()
-        if "results" in response_data and response_data["results"]:
-            raw_response = response_data["results"][0]["generated_text"]
-            return clean_ai_response(raw_response)
-        else:
-            return "Error: 'generated_text' not found in the response."
-    else:
-        return f"Error: Failed to fetch response from Watsonx.ai. Status code: {response.status_code}"
-
-def advanced_language_detection(text):
-    """Advanced language detection using multiple techniques"""
-    if not text or len(text.strip()) < 2:
-        return 'en', 0.0
     
-    text = text.lower().strip()
-    scores = {}
+    # Script score
+    script_ratio = features['script_chars'][lang] / len(text) if text else 0
+    script_score = 1.0 if abs(script_ratio - stats['script_ratio']) < 0.1 else 0.0
+    score += script_score * weights['script']
     
-    # Method 1: Script/Character range detection
-    char_scores = {}
-    for lang, patterns in LANGUAGE_PATTERNS.items():
-        char_count = 0
-        total_chars = len([c for c in text if c.isalpha()])
-        
-        if total_chars == 0:
-            continue
-            
-        for char in text:
-            if any(ord(char) in patterns['chars'] for _ in [1]):
-                try:
-                    if ord(char) in patterns['chars']:
-                        char_count += 1
-                except:
-                    pass
-        
-        if total_chars > 0:
-            char_scores[lang] = char_count / total_chars
+    # Word length score
+    word_length_diff = abs(features['avg_word_length'] - stats['avg_word_length'])
+    word_length_score = 1.0 if word_length_diff < 0.5 else 0.0
+    score += word_length_score * weights['word_length']
     
-    # Method 2: Keyword matching
-    keyword_scores = {}
-    words = re.findall(r'\b\w+\b', text)
-    total_words = len(words)
+    # Vowel ratio score
+    vowel_ratio_diff = abs(features['vowel_ratio'] - stats['vowel_ratio'])
+    vowel_ratio_score = 1.0 if vowel_ratio_diff < 0.1 else 0.0
+    score += vowel_ratio_score * weights['vowel_ratio']
     
-    for lang, patterns in LANGUAGE_PATTERNS.items():
-        keyword_matches = 0
-        for word in words:
-            if word in patterns['keywords']:
-                keyword_matches += 1
-        
-        if total_words > 0:
-            keyword_scores[lang] = keyword_matches / total_words
+    # Common endings score
+    endings_score = 0.0
+    for ending in stats['common_endings']:
+        if ending in features['common_endings']:
+            endings_score += 1
+    endings_score = min(1.0, endings_score / len(stats['common_endings']))
+    score += endings_score * weights['endings']
     
-    # Method 3: Common endings detection
-    ending_scores = {}
-    for lang, patterns in LANGUAGE_PATTERNS.items():
-        ending_matches = 0
-        for ending in patterns['common_endings']:
-            if text.endswith(ending) or any(word.endswith(ending) for word in words):
-                ending_matches += 1
-        
-        ending_scores[lang] = ending_matches / len(patterns['common_endings'])
+    # Consonant clusters score
+    clusters_score = 0.0
+    for cluster in stats['consonant_clusters']:
+        if cluster in features['consonant_clusters']:
+            clusters_score += 1
+    clusters_score = min(1.0, clusters_score / len(stats['consonant_clusters']))
+    score += clusters_score * weights['clusters']
     
-    # Method 4: Language-specific patterns
-    pattern_scores = {}
+    # Character frequency score
+    char_freq_score = 0.0
+    common_chars = stats['common_chars']
+    text_chars = set(features['char_freq'].keys())
+    if common_chars and text_chars:
+        char_freq_score = len(common_chars.intersection(text_chars)) / len(common_chars)
+    score += char_freq_score * weights['char_freq']
     
-    # Hindi/Marathi specific patterns
-    hindi_patterns = [r'[हैं|है|का|के|की|को|में|से]', r'क्[या|यों|या]', r'[होगा|होगी|होंगे]']
-    
-    
-    # Tamil specific patterns
-    tamil_patterns = [r'[ான்|ாள்|ார்|க்கு|வில்|டு]', r'[என்ன|எப்படி|எங்கே]']
-    
-    # Telugu specific patterns  
-    
-    
-    for lang in LANGUAGE_PATTERNS.keys():
-        pattern_matches = 0
-        if lang == 'hi':
-            pattern_matches = sum(len(re.findall(pattern, text)) for pattern in hindi_patterns)
-        elif lang == 'ta':
-            pattern_matches = sum(len(re.findall(pattern, text)) for pattern in tamil_patterns)
-        
-        
-        pattern_scores[lang] = pattern_matches / max(1, len(words))
-    
-    # Combine all scores with weights
-    for lang in LANGUAGE_PATTERNS.keys():
-        combined_score = (
-            char_scores.get(lang, 0) * 0.4 +           # Script detection (40%)
-            keyword_scores.get(lang, 0) * 0.3 +        # Keyword matching (30%)
-            ending_scores.get(lang, 0) * 0.2 +         # Common endings (20%)
-            pattern_scores.get(lang, 0) * 0.1          # Pattern matching (10%)
-        )
-        scores[lang] = combined_score
-    
-    # Use langdetect as additional validation if available
-    if LANGDETECT_AVAILABLE:
-        try:
-            langdetect_result = detect(text)
-            if langdetect_result in scores:
-                scores[langdetect_result] *= 1.2  # Boost score by 20%
-        except:
-            pass
-    
-    # Find the language with highest score
-    if scores:
-        best_lang = max(scores, key=scores.get)
-        confidence = scores[best_lang]
-        
-        # Minimum confidence threshold
-        if confidence < 0.1:
-            return 'en', confidence
-        
-        return best_lang, confidence
-    
-    return 'en', 0.0
+    return score
 
 def detect_language_from_text(text):
-    """Enhanced language detection with confidence scoring"""
-    detected_lang, confidence = advanced_language_detection(text)
+    """New language detection method using statistical analysis"""
+    if not text or len(text.strip()) < 2:
+        return 'en'
     
-    # Log detection results for debugging
-    if hasattr(st, 'session_state'):
-        st.session_state.last_detection_confidence = confidence
+    text = text.strip()
     
-    return detected_lang
+    # Calculate scores for each language
+    scores = {}
+    for lang in ['en', 'hi', 'ta']:
+        scores[lang] = calculate_language_score(text, lang)
+    
+    # Get the best matching language
+    best_lang = max(scores.items(), key=lambda x: x[1])
+    confidence = best_lang[1]
+    
+    # Store detection details
+    st.session_state.last_detection_details = {
+        'detected_lang': best_lang[0],
+        'confidence': confidence,
+        'scores': scores,
+        'features': calculate_language_features(text)
+    }
+    
+    # Only return a language if confidence is high enough
+    if confidence >= 0.7:  # 70% confidence threshold
+        return best_lang[0]
+    
+    # If confidence is too low, return English as fallback
+    st.session_state.last_detection_details['fallback'] = True
+    return 'en'
 
 def listen_for_speech_multilingual():
     """Enhanced speech recognition with advanced language detection"""
@@ -347,18 +597,22 @@ def listen_for_speech_multilingual():
                         text = recognizer.recognize_google(audio, language=google_lang_code)
                         
                         if text.strip():
-                            # Use advanced language detection
-                            detected_lang, confidence = advanced_language_detection(text)
+                            # Use language detection
+                            detected_lang = detect_language_from_text(text)
+                            
+                            # Get detection details from session state
+                            detection_details = st.session_state.get('last_detection_details', {})
+                            detection_confidence = detection_details.get('confidence', 0.5)
                             
                             # Calculate total score (recognition success + language match + confidence)
                             lang_match_bonus = 1.0 if detected_lang == lang_code else 0.5
-                            total_score = confidence + lang_match_bonus + (len(text.split()) * 0.1)
+                            total_score = detection_confidence + lang_match_bonus + (len(text.split()) * 0.1)
                             
                             recognition_results.append({
                                 'text': text,
                                 'recognition_lang': lang_code,
                                 'detected_lang': detected_lang,
-                                'confidence': confidence,
+                                'confidence': detection_confidence,
                                 'total_score': total_score
                             })
                             
@@ -394,13 +648,17 @@ def listen_for_speech_multilingual():
                 try:
                     text = recognizer.recognize_google(audio, language=google_lang_code)
                     
-                    # Still run advanced detection for validation
-                    detected_lang, confidence = advanced_language_detection(text)
+                    # Still run language detection for validation
+                    detected_lang = detect_language_from_text(text)
+                    
+                    # Get detection details from session state
+                    detection_details = st.session_state.get('last_detection_details', {})
+                    detection_confidence = detection_details.get('confidence', 0.5)
                     
                     st.session_state.last_detection_details = {
                         'recognition_lang': selected_lang,
                         'detected_lang': detected_lang,
-                        'confidence': confidence,
+                        'confidence': detection_confidence,
                         'manual_mode': True
                     }
                     
@@ -595,17 +853,18 @@ Summary:"""
     except Exception as e:
         return f"Error generating summary: {str(e)}"
 
-def send_to_slack(summary, webhook_url):
-    """Send conversation summary to Slack channel"""
+
+def send_to_slack(summary, webhook_url, bot_name="Ava"):
+    """Ava sends conversation summary to Slack for human agent review"""
     try:
-        # Format the message for Slack
+        # Format the message from Ava to the agent
         message = {
             "blocks": [
                 {
                     "type": "header",
                     "text": {
                         "type": "plain_text",
-                        "text": "🎙️ Voice Bot Conversation Summary",
+                        "text": f"📬 Message from {bot_name} – Conversation Summary",
                         "emoji": True
                     }
                 },
@@ -613,7 +872,17 @@ def send_to_slack(summary, webhook_url):
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*Summary:*\n{summary}"
+                        "text": (
+                            f"Hello team! :wave:\n\n"
+                            f"I just wrapped up a conversation with a customer. Here's a summary for your review:"
+                        )
+                    }
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"> {summary.replace(chr(10), chr(10) + '> ')}"
                     }
                 },
                 {
@@ -621,17 +890,18 @@ def send_to_slack(summary, webhook_url):
                     "elements": [
                         {
                             "type": "mrkdwn",
-                            "text": f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                            "text": f"_Generated on {datetime.now().strftime('%A, %B %d, %Y at %I:%M %p')} by {bot_name}_"
                         }
                     ]
                 }
             ]
         }
-        
+
         # Send to Slack
         response = requests.post(webhook_url, json=message)
         response.raise_for_status()
         return True
+
     except Exception as e:
         st.error(f"Error sending to Slack: {str(e)}")
         return False
@@ -653,21 +923,26 @@ def send_summary_email(summary, recipient_email):
         msg = MIMEMultipart()
         msg['From'] = sender_email
         msg['To'] = recipient_email
-        msg['Subject'] = f"Voice Bot Conversation Summary - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        msg['Subject'] = f"{bot_name} – Your Voice Conversation Summary • {datetime.now().strftime('%B %d, %Y at %I:%M %p')}"
 
         # Add summary to email body
         body = f"""
         <html>
-            <body>
-                <h2>Voice Bot Conversation Summary</h2>
-                <p>Here is the summary of your recent conversation:</p>
-                <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px;">
+            <body style="font-family: Arial, sans-serif; color: #333;">
+                <h2 style="color: #4B0082;">Hi there! I'm {bot_name} 👋</h2>
+                <p>I've put together a quick summary of our recent conversation. Here's what we discussed:</p>
+                <div style="background-color: #f0f0f5; padding: 15px; border-left: 5px solid #4B0082; border-radius: 6px; margin: 20px 0;">
                     {summary}
                 </div>
-                <p>This summary was generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                <p>If anything feels off or you'd like me to clarify more, I'm always here to help!</p>
+                <p style="margin-top: 30px;">Chat recorded on <strong>{datetime.now().strftime('%A, %B %d, %Y at %I:%M %p')}</strong></p>
+                <p>With warm regards,</p>
+                <p style="font-size: 16px; font-weight: bold;">{bot_name}<br>
+                <span style="font-size: 14px; font-weight: normal;">Your Voice Companion</span></p>
             </body>
         </html>
         """
+
         msg.attach(MIMEText(body, 'html'))
 
         # Send email
@@ -687,6 +962,101 @@ def send_summary_email(summary, recipient_email):
         return "Summary sent successfully to email!"
     except Exception as e:
         return f"Error sending summary: {str(e)}"
+
+def get_bearer_token(api_key):
+    """Get bearer token for Watsonx API authentication"""
+    url = "https://iam.cloud.ibm.com/identity/token"
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    data = f"apikey={api_key}&grant_type=urn:ibm:params:oauth:grant-type:apikey"
+
+    response = requests.post(url, headers=headers, data=data)
+
+    if response.status_code == 200:
+        return response.json()["access_token"]
+    else:
+        st.error(f"Failed to retrieve access token: {response.text}")
+        return None
+
+def clean_ai_response(response_text):
+    """Clean the AI response by removing template tags and unwanted text"""
+    if not response_text:
+        return response_text
+    
+    # Remove common template tags
+    unwanted_patterns = [
+        "assistant<|end_header_id|>",
+        "<|start_header_id|>assistant<|end_header_id|>",
+        "<|eot_id|>",
+        "<|start_header_id|>",
+        "<|end_header_id|>",
+        "**",
+        "assistant<|end_header_id|>\n\n",
+        "assistant<|end_header_id|>\n",
+    ]
+    
+    cleaned_response = response_text
+    for pattern in unwanted_patterns:
+        cleaned_response = cleaned_response.replace(pattern, "")
+    
+    # Remove leading/trailing whitespace and newlines
+    cleaned_response = cleaned_response.strip()
+    
+    return cleaned_response
+
+def get_watsonx_response(history, user_input, bearer_token, detected_lang='en'):
+    """Get response from Watsonx API"""
+    url = "https://us-south.ml.cloud.ibm.com/ml/v1/text/generation?version=2023-05-29"
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": f"Bearer {bearer_token}"
+    }
+
+    # Add language context to the conversation
+    language_context = ""
+    if detected_lang != 'en':
+        lang_names = {
+            'hi': 'Hindi', 'ta': 'Tamil'
+        }
+        lang_name = lang_names.get(detected_lang, 'regional language')
+        language_context = f"The user is speaking in {lang_name}. Please respond appropriately and consider the cultural context. If needed, you can respond in English or the same language as appropriate."
+
+    # Construct the conversation history
+    conversation = ""
+    if language_context:
+        conversation += f"<|start_header_id|>system<|end_header_id|>\n\n{language_context}<|eot_id|>\n"
+    
+    conversation += "".join(
+        f"<|start_header_id|>{role}<|end_header_id|>\n\n{text}<|eot_id|>\n" 
+        for role, text in history
+    )
+    
+    conversation += f"<|start_header_id|>user<|end_header_id|>\n\n{user_input}<|eot_id|>\n"
+
+    payload = {
+        "input": conversation,
+        "parameters": {
+            "decoding_method": "greedy",
+            "max_new_tokens": 8100,
+            "min_new_tokens": 0,
+            "stop_sequences": [],
+            "repetition_penalty": 1
+        },
+        "model_id": "meta-llama/llama-3-3-70b-instruct",
+        "project_id": os.getenv("PROJECT_ID")
+    }
+
+    response = requests.post(url, headers=headers, json=payload)
+
+    if response.status_code == 200:
+        response_data = response.json()
+        if "results" in response_data and response_data["results"]:
+            raw_response = response_data["results"][0]["generated_text"]
+            return clean_ai_response(raw_response)
+        else:
+            return "Error: 'generated_text' not found in the response."
+    else:
+        return f"Error: Failed to fetch response from Watsonx.ai. Status code: {response.status_code}"
 
 # Main UI
 st.title("🎙️ Multilingual Voice Bot with Watsonx LLM")
@@ -782,8 +1152,8 @@ else:
 st.markdown("---")
 st.header("📊 Conversation Summary")
 
-# Add email input field
-email_address = st.text_input("Enter email address to receive summary:", key="summary_email")
+# Replace the email input field with hardcoded email
+email_address = "ananthananth881@gmail.com"  # Replace this with your actual email address
 
 # Add a button to generate and send summary
 col1, col2 = st.columns(2)
@@ -798,7 +1168,7 @@ with col1:
             st.session_state.last_summary = summary
 
 with col2:
-    if st.button("Send Summary via Email", disabled=not email_address):
+    if st.button("Send Summary via Email"):
         if not st.session_state.get('last_summary'):
             st.warning("Please generate a summary first!")
         else:
