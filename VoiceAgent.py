@@ -33,7 +33,10 @@ try:
     PYGAME_AVAILABLE = True
 except Exception as e:
     PYGAME_AVAILABLE = False
-    print("Warning: pygame audio not available. Using alternative audio playback.")
+    # Only print warning once
+    if not hasattr(st.session_state, 'pygame_warning_shown'):
+        st.warning("Pygame audio not available. Using alternative audio playback.")
+        st.session_state.pygame_warning_shown = True
 
 # Load environment variables
 load_dotenv()
@@ -697,19 +700,10 @@ def speak_text_multilingual(text, language='en'):
         tts = gTTS(text=text, lang=tts_lang, slow=False)
         tts.save(temp_filename)
         
-        if PYGAME_AVAILABLE:
-            # Play the audio using pygame
-            pygame.mixer.music.load(temp_filename)
-            pygame.mixer.music.play()
-            
-            # Wait for the audio to finish playing
-            while pygame.mixer.music.get_busy():
-                pygame.time.Clock().tick(10)
-        else:
-            # Alternative: Create an audio player using Streamlit's audio component
-            with open(temp_filename, 'rb') as audio_file:
-                audio_bytes = audio_file.read()
-                st.audio(audio_bytes, format='audio/mp3')
+        # Always use Streamlit's audio component for playback
+        with open(temp_filename, 'rb') as audio_file:
+            audio_bytes = audio_file.read()
+            st.audio(audio_bytes, format='audio/mp3')
             
         # Clean up the temporary file
         try:
